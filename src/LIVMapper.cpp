@@ -11,6 +11,7 @@ which is included as part of this source code package.
 */
 
 #include "LIVMapper.h"
+#include <algorithm>
 #include <vikit/camera_loader.h>
 
 using namespace Sophus;
@@ -42,6 +43,18 @@ LIVMapper::LIVMapper(rclcpp::Node::SharedPtr &node, std::string node_name, const
   voxelmap_manager.reset(new VoxelMapManager(voxel_config, voxel_map));
   vio_manager.reset(new VIOManager());
   root_dir = ROOT_DIR;
+  if (global_voxel_map_path.empty()) { global_voxel_map_path = std::string(ROOT_DIR) + "Log/PCD/global_voxel_map.bin"; }
+  if (load_global_voxel_map_en)
+  {
+
+    std::cout << "11"<< std::endl;
+    global_voxel_map_loaded_ = loadGlobalVoxelMap(global_voxel_map_path);
+    if (global_voxel_map_loaded_)
+    {
+      lidar_map_inited = true;
+      std::cout << GREEN << "Loaded global voxel map from: " << global_voxel_map_path << RESET << std::endl;
+    }
+  }
   initializeFiles();
   initializeComponents(this->node);          // initialize components errors
   path.header.stamp = this->node->now();
@@ -110,8 +123,13 @@ void LIVMapper::readParameters(rclcpp::Node::SharedPtr &node)
 
   try_declare.template operator()<int>("pcd_save.interval", -1);
   try_declare.template operator()<bool>("pcd_save.pcd_save_en", false);
+  try_declare.template operator()<bool>("pcd_save.voxel_map_save_en", false);
   try_declare.template operator()<bool>("pcd_save.colmap_output_en", false);
   try_declare.template operator()<double>("pcd_save.filter_size_pcd", 0.5);
+  try_declare.template operator()<bool>("map_io.save_global_voxel_map_en", false);
+  try_declare.template operator()<bool>("map_io.load_global_voxel_map_en", false);
+  try_declare.template operator()<bool>("map_io.localization_mode_en", false);
+  try_declare.template operator()<std::string>("map_io.global_voxel_map_path", std::string(ROOT_DIR) + "Log/PCD/global_voxel_map.bin");
   try_declare.template operator()<vector<double>>("extrin_calib.extrinsic_T", vector<double>{});
   try_declare.template operator()<vector<double>>("extrin_calib.extrinsic_R", vector<double>{});
   try_declare.template operator()<vector<double>>("extrin_calib.Pcl", vector<double>{});
@@ -168,8 +186,13 @@ void LIVMapper::readParameters(rclcpp::Node::SharedPtr &node)
 
   this->node->get_parameter("pcd_save.interval", pcd_save_interval);
   this->node->get_parameter("pcd_save.pcd_save_en", pcd_save_en);
+  this->node->get_parameter("pcd_save.voxel_map_save_en", voxel_map_save_en);
   this->node->get_parameter("pcd_save.colmap_output_en", colmap_output_en);
   this->node->get_parameter("pcd_save.filter_size_pcd", filter_size_pcd);
+  this->node->get_parameter("map_io.save_global_voxel_map_en", save_global_voxel_map_en);
+  this->node->get_parameter("map_io.load_global_voxel_map_en", load_global_voxel_map_en);
+  this->node->get_parameter("map_io.localization_mode_en", localization_mode_en);
+  this->node->get_parameter("map_io.global_voxel_map_path", global_voxel_map_path);
   this->node->get_parameter("extrin_calib.extrinsic_T", extrinT);
   this->node->get_parameter("extrin_calib.extrinsic_R", extrinR);
   this->node->get_parameter("extrin_calib.Pcl", cameraextrinT);
@@ -498,8 +521,15 @@ void LIVMapper::handleLIO()
           (-point_crossmat) * _state.cov.block<3, 3>(0, 0) * (-point_crossmat).transpose() + _state.cov.block<3, 3>(3, 3);
     voxelmap_manager->pv_list_[i].var = var;
   }
-  voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
-  std::cout << "[ LIO ] Update Voxel Map" << std::endl;
+  if (!localization_mode_en)
+  {
+    voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
+    std::cout << "[ LIO ] Update Voxel Map" << std::endl;
+  }
+  else
+  {
+    std::cout << "[ LIO ] Localization mode: skip voxel map update" << std::endl;
+  }
   _pv_list = voxelmap_manager->pv_list_;
   
   double t4 = omp_get_wtime();
@@ -606,6 +636,349 @@ void LIVMapper::savePCD()
                 << " with point count: " << pcl_wait_save_intensity->points.size() << RESET << std::endl;
     }
   }
+
+  auto &managed_voxel_map = voxelmap_manager->voxel_map_;
+
+  if (voxel_map_save_en && !managed_voxel_map.empty())
+  {
+    PointCloudXYZI::Ptr voxel_plane_cloud(new PointCloudXYZI());
+    voxel_plane_cloud->reserve(managed_voxel_map.size());
+
+    auto collect_plane_points = [&](const VoxelOctoTree *node, const auto &self) -> void
+    {
+      if (node == nullptr || node->plane_ptr_ == nullptr) return;
+
+      if (node->plane_ptr_->is_plane_)
+      {
+        PointType point;
+        point.x = node->plane_ptr_->center_(0);
+        point.y = node->plane_ptr_->center_(1);
+        point.z = node->plane_ptr_->center_(2);
+        point.intensity = static_cast<float>(node->plane_ptr_->points_size_);
+        voxel_plane_cloud->push_back(point);
+      }
+
+      for (size_t i = 0; i < 8; ++i)
+      {
+        if (node->leaves_[i] != nullptr) self(node->leaves_[i], self);
+      }
+    };
+
+    for (const auto &kv : managed_voxel_map)
+    {
+      collect_plane_points(kv.second, collect_plane_points);
+    }
+
+    if (!voxel_plane_cloud->empty())
+    {
+      const std::string voxel_map_dir = std::string(ROOT_DIR) + "Log/PCD/voxel_map.pcd";
+      pcl::PCDWriter pcd_writer;
+      pcd_writer.writeBinary(voxel_map_dir, *voxel_plane_cloud);
+      std::cout << GREEN << "Voxel map saved to: " << voxel_map_dir
+                << " with voxel-plane count: " << voxel_plane_cloud->size() << RESET << std::endl;
+    }
+    else
+    {
+      std::cout << YELLOW << "Voxel map save is enabled, but no valid voxel planes were found." << RESET << std::endl;
+    }
+  }
+
+  if (save_global_voxel_map_en)
+  {
+    saveGlobalVoxelMap(global_voxel_map_path);
+  }
+}
+
+bool LIVMapper::saveGlobalVoxelMap(const std::string &file_path)
+{
+  auto &managed_voxel_map = voxelmap_manager->voxel_map_;
+
+  std::string resolved_path = file_path;
+  const bool is_windows_abs = (resolved_path.size() > 1 && resolved_path[1] == ':');
+  const bool is_unix_abs = (!resolved_path.empty() && resolved_path[0] == '/');
+  if (!is_windows_abs && !is_unix_abs) resolved_path = std::string(ROOT_DIR) + resolved_path;
+
+  if (managed_voxel_map.empty())
+  {
+    std::cout << YELLOW << "Global voxel map is empty, skip save." << RESET << std::endl;
+    return false;
+  }
+
+  std::ofstream ofs(resolved_path, std::ios::binary | std::ios::trunc);
+  if (!ofs.is_open())
+  {
+    std::cout << RED << "Failed to open global voxel map file for writing: " << resolved_path << RESET << std::endl;
+    return false;
+  }
+
+  auto write_raw = [&ofs](const auto &value) { ofs.write(reinterpret_cast<const char *>(&value), sizeof(value)); };
+
+  const char magic[16] = {'F', 'A', 'S', 'T', '_', 'L', 'I', 'V', 'O', '2', '_', 'V', 'M', 'A', 'P', '\0'};
+  ofs.write(magic, sizeof(magic));
+  const uint32_t version = 1;
+  write_raw(version);
+  write_raw(voxelmap_manager->config_setting_.max_voxel_size_);
+  write_raw(voxelmap_manager->config_setting_.max_layer_);
+  const uint64_t root_count = static_cast<uint64_t>(managed_voxel_map.size());
+  write_raw(root_count);
+
+  auto write_plane = [&](const VoxelPlane *plane_ptr)
+  {
+    ofs.write(reinterpret_cast<const char *>(plane_ptr->center_.data()), sizeof(double) * 3);
+    ofs.write(reinterpret_cast<const char *>(plane_ptr->normal_.data()), sizeof(double) * 3);
+    ofs.write(reinterpret_cast<const char *>(plane_ptr->y_normal_.data()), sizeof(double) * 3);
+    ofs.write(reinterpret_cast<const char *>(plane_ptr->x_normal_.data()), sizeof(double) * 3);
+    ofs.write(reinterpret_cast<const char *>(plane_ptr->covariance_.data()), sizeof(double) * 9);
+    ofs.write(reinterpret_cast<const char *>(plane_ptr->plane_var_.data()), sizeof(double) * 36);
+    write_raw(plane_ptr->radius_);
+    write_raw(plane_ptr->min_eigen_value_);
+    write_raw(plane_ptr->mid_eigen_value_);
+    write_raw(plane_ptr->max_eigen_value_);
+    write_raw(plane_ptr->d_);
+    write_raw(plane_ptr->points_size_);
+    write_raw(plane_ptr->is_plane_);
+    write_raw(plane_ptr->is_init_);
+    write_raw(plane_ptr->id_);
+    write_raw(plane_ptr->is_update_);
+  };
+
+  auto write_node = [&](const VoxelOctoTree *node, const auto &self) -> void
+  {
+    write_raw(node->layer_);
+    write_raw(node->octo_state_);
+    ofs.write(reinterpret_cast<const char *>(node->voxel_center_), sizeof(double) * 3);
+    write_raw(node->quater_length_);
+    write_raw(node->new_points_);
+    write_raw(node->init_octo_);
+    write_raw(node->update_enable_);
+    write_raw(node->points_size_threshold_);
+    write_raw(node->update_size_threshold_);
+    write_raw(node->max_points_num_);
+    write_raw(node->max_layer_);
+    write_raw(node->planer_threshold_);
+
+    const uint64_t layer_num_size = static_cast<uint64_t>(node->layer_init_num_.size());
+    write_raw(layer_num_size);
+    for (const int value : node->layer_init_num_) write_raw(value);
+
+    const bool has_plane = (node->plane_ptr_ != nullptr);
+    write_raw(has_plane);
+    if (has_plane) write_plane(node->plane_ptr_);
+
+    uint8_t child_mask = 0;
+    for (int i = 0; i < 8; ++i)
+    {
+      if (node->leaves_[i] != nullptr) child_mask |= static_cast<uint8_t>(1u << i);
+    }
+    write_raw(child_mask);
+    for (int i = 0; i < 8; ++i)
+    {
+      if (node->leaves_[i] != nullptr) self(node->leaves_[i], self);
+    }
+  };
+
+  for (const auto &kv : managed_voxel_map)
+  {
+    write_raw(kv.first.x);
+    write_raw(kv.first.y);
+    write_raw(kv.first.z);
+    write_node(kv.second, write_node);
+  }
+
+  ofs.close();
+  std::cout << GREEN << "Global voxel map saved to: " << resolved_path
+            << " with root voxel count: " << managed_voxel_map.size() << RESET << std::endl;
+  return true;
+}
+
+bool LIVMapper::loadGlobalVoxelMap(const std::string &file_path)
+{
+  auto &managed_voxel_map = voxelmap_manager->voxel_map_;
+
+  std::string resolved_path = file_path;
+  const bool is_windows_abs = (resolved_path.size() > 1 && resolved_path[1] == ':');
+  const bool is_unix_abs = (!resolved_path.empty() && resolved_path[0] == '/');
+  if (!is_windows_abs && !is_unix_abs) resolved_path = std::string(ROOT_DIR) + resolved_path;
+
+  std::ifstream ifs(resolved_path, std::ios::binary);
+  if (!ifs.is_open())
+  {
+    std::cout << YELLOW << "Global voxel map file not found: " << resolved_path << RESET << std::endl;
+    return false;
+  }
+
+  auto read_raw = [&ifs](auto &value) -> bool
+  {
+    ifs.read(reinterpret_cast<char *>(&value), sizeof(value));
+    return static_cast<bool>(ifs);
+  };
+
+  char magic[16] = {};
+  ifs.read(magic, sizeof(magic));
+  if (std::string(magic) != "FAST_LIVO2_VMAP")
+  {
+    std::cout << RED << "Invalid global voxel map file magic: " << resolved_path << RESET << std::endl;
+    return false;
+  }
+
+  uint32_t version = 0;
+  if (!read_raw(version) || version != 1)
+  {
+    std::cout << RED << "Unsupported global voxel map version in: " << resolved_path << RESET << std::endl;
+    return false;
+  }
+
+  double voxel_size_file = 0.0;
+  int max_layer_file = 0;
+  uint64_t root_count = 0;
+  if (!read_raw(voxel_size_file) || !read_raw(max_layer_file) || !read_raw(root_count))
+  {
+    std::cout << RED << "Corrupted global voxel map header: " << resolved_path << RESET << std::endl;
+    return false;
+  }
+
+  for (auto &kv : managed_voxel_map) delete kv.second;
+  managed_voxel_map.clear();
+
+  auto read_plane = [&](VoxelPlane *plane_ptr) -> bool
+  {
+    ifs.read(reinterpret_cast<char *>(plane_ptr->center_.data()), sizeof(double) * 3);
+    ifs.read(reinterpret_cast<char *>(plane_ptr->normal_.data()), sizeof(double) * 3);
+    ifs.read(reinterpret_cast<char *>(plane_ptr->y_normal_.data()), sizeof(double) * 3);
+    ifs.read(reinterpret_cast<char *>(plane_ptr->x_normal_.data()), sizeof(double) * 3);
+    ifs.read(reinterpret_cast<char *>(plane_ptr->covariance_.data()), sizeof(double) * 9);
+    ifs.read(reinterpret_cast<char *>(plane_ptr->plane_var_.data()), sizeof(double) * 36);
+    if (!read_raw(plane_ptr->radius_)) return false;
+    if (!read_raw(plane_ptr->min_eigen_value_)) return false;
+    if (!read_raw(plane_ptr->mid_eigen_value_)) return false;
+    if (!read_raw(plane_ptr->max_eigen_value_)) return false;
+    if (!read_raw(plane_ptr->d_)) return false;
+    if (!read_raw(plane_ptr->points_size_)) return false;
+    if (!read_raw(plane_ptr->is_plane_)) return false;
+    if (!read_raw(plane_ptr->is_init_)) return false;
+    if (!read_raw(plane_ptr->id_)) return false;
+    if (!read_raw(plane_ptr->is_update_)) return false;
+    return static_cast<bool>(ifs);
+  };
+
+  auto read_node = [&](const auto &self) -> VoxelOctoTree *
+  {
+    int layer = 0;
+    int octo_state = 0;
+    double voxel_center[3] = {0.0, 0.0, 0.0};
+    float quater_length = 0.0f;
+    int new_points = 0;
+    bool init_octo = false;
+    bool update_enable = true;
+    int points_size_threshold = 0;
+    int update_size_threshold = 0;
+    int max_points_num = 0;
+    int max_layer = 0;
+    float planer_threshold = 0.0f;
+    uint64_t layer_num_size = 0;
+
+    if (!read_raw(layer) || !read_raw(octo_state)) return static_cast<VoxelOctoTree *>(nullptr);
+    ifs.read(reinterpret_cast<char *>(voxel_center), sizeof(double) * 3);
+    if (!read_raw(quater_length) || !read_raw(new_points) || !read_raw(init_octo) || !read_raw(update_enable) ||
+        !read_raw(points_size_threshold) || !read_raw(update_size_threshold) || !read_raw(max_points_num) ||
+        !read_raw(max_layer) || !read_raw(planer_threshold) || !read_raw(layer_num_size))
+    {
+      return static_cast<VoxelOctoTree *>(nullptr);
+    }
+
+    std::vector<int> layer_init_num;
+    layer_init_num.resize(layer_num_size);
+    for (uint64_t i = 0; i < layer_num_size; ++i)
+    {
+      if (!read_raw(layer_init_num[i])) return static_cast<VoxelOctoTree *>(nullptr);
+    }
+
+    int safe_threshold = points_size_threshold;
+    if (safe_threshold <= 0)
+    {
+      const std::vector<int> configured = convertToIntVectorSafe(voxelmap_manager->config_setting_.layer_init_num_);
+      safe_threshold = configured.empty() ? 5 : configured[0];
+    }
+    int safe_max_layer = std::max(max_layer, voxelmap_manager->config_setting_.max_layer_);
+    int safe_max_points_num = std::max(max_points_num, voxelmap_manager->config_setting_.max_points_num_);
+    float safe_planer_threshold = std::max(planer_threshold, static_cast<float>(voxelmap_manager->config_setting_.planner_threshold_));
+
+    VoxelOctoTree *node = new VoxelOctoTree(safe_max_layer, layer, safe_threshold, safe_max_points_num, safe_planer_threshold);
+    node->octo_state_ = octo_state;
+    node->voxel_center_[0] = voxel_center[0];
+    node->voxel_center_[1] = voxel_center[1];
+    node->voxel_center_[2] = voxel_center[2];
+    node->quater_length_ = quater_length;
+    node->new_points_ = new_points;
+    node->init_octo_ = init_octo;
+    node->update_enable_ = update_enable;
+    node->points_size_threshold_ = points_size_threshold;
+    node->update_size_threshold_ = update_size_threshold;
+    node->max_points_num_ = max_points_num;
+    node->max_layer_ = max_layer;
+    node->planer_threshold_ = planer_threshold;
+    node->layer_init_num_ = layer_init_num;
+
+    bool has_plane = false;
+    if (!read_raw(has_plane))
+    {
+      delete node;
+      return static_cast<VoxelOctoTree *>(nullptr);
+    }
+    if (has_plane && !read_plane(node->plane_ptr_))
+    {
+      delete node;
+      return static_cast<VoxelOctoTree *>(nullptr);
+    }
+    if (!has_plane)
+    {
+      node->plane_ptr_->is_plane_ = false;
+      node->plane_ptr_->is_update_ = false;
+    }
+
+    uint8_t child_mask = 0;
+    if (!read_raw(child_mask))
+    {
+      delete node;
+      return static_cast<VoxelOctoTree *>(nullptr);
+    }
+
+    for (int i = 0; i < 8; ++i)
+    {
+      if (child_mask & static_cast<uint8_t>(1u << i))
+      {
+        node->leaves_[i] = self(self);
+        if (node->leaves_[i] == nullptr)
+        {
+          delete node;
+          return static_cast<VoxelOctoTree *>(nullptr);
+        }
+      }
+    }
+    return node;
+  };
+
+  for (uint64_t i = 0; i < root_count; ++i)
+  {
+    int64_t x = 0, y = 0, z = 0;
+    if (!read_raw(x) || !read_raw(y) || !read_raw(z))
+    {
+      std::cout << RED << "Corrupted global voxel map body: " << resolved_path << RESET << std::endl;
+      return false;
+    }
+    VoxelOctoTree *root = read_node(read_node);
+    if (root == nullptr)
+    {
+      std::cout << RED << "Failed to parse voxel octree node from: " << resolved_path << RESET << std::endl;
+      return false;
+    }
+    managed_voxel_map[VOXEL_LOCATION(x, y, z)] = root;
+  }
+
+  ifs.close();
+  std::cout << GREEN << "Loaded global voxel map with root voxel count: " << managed_voxel_map.size()
+            << ", voxel_size(file): " << voxel_size_file << ", max_layer(file): " << max_layer_file << RESET << std::endl;
+  return true;
 }
 
 void LIVMapper::run(rclcpp::Node::SharedPtr &node) 

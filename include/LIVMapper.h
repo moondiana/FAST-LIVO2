@@ -42,6 +42,8 @@ public:
   void handleVIO();
   void handleLIO();
   void savePCD();
+  bool saveGlobalVoxelMap(const std::string &file_path);
+  bool loadGlobalVoxelMap(const std::string &file_path);
   void processImu();
   
   bool sync_packages(LidarMeasureGroup &meas);
@@ -90,7 +92,9 @@ public:
   double _first_lidar_time = 0.0;
   double match_time = 0, solve_time = 0, solve_const_H_time = 0;
 
-  bool lidar_map_inited = false, pcd_save_en = false, pub_effect_point_en = false, pose_output_en = false, ros_driver_fix_en = false;
+  bool lidar_map_inited = false, pcd_save_en = false, voxel_map_save_en = false, pub_effect_point_en = false, pose_output_en = false, ros_driver_fix_en = false;
+  bool save_global_voxel_map_en = false, load_global_voxel_map_en = false, localization_mode_en = false, global_voxel_map_loaded_ = false;
+  std::string global_voxel_map_path;
   int pcd_save_interval = -1, pcd_index = 0;
   int pub_scan_num = 1;
 

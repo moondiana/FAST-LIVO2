@@ -82,8 +82,15 @@
 
     pcd_save:
       pcd_save_en: false
+      voxel_map_save_en: false
       colmap_output_en: false # need to set interval = -1
       filter_size_pcd: 0.15
       interval: -1
       # how many LiDAR frames saved in each pcd file;
       # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
+
+    map_io:
+      save_global_voxel_map_en: false
+      load_global_voxel_map_en: true
+      localization_mode_en: true
+      global_voxel_map_path: "Log/PCD/global_voxel_map.bin"
