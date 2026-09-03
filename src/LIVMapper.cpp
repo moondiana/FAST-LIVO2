@@ -11,6 +11,7 @@ which is included as part of this source code package.
 */
 
 #include "LIVMapper.h"
+#include "log_init.h"
 #include <algorithm>
 #include <vikit/camera_loader.h>
 
@@ -43,7 +44,7 @@ LIVMapper::LIVMapper(rclcpp::Node::SharedPtr &node, std::string node_name, const
   voxelmap_manager.reset(new VoxelMapManager(voxel_config, voxel_map));
   vio_manager.reset(new VIOManager());
   root_dir = ROOT_DIR;
-  if (global_voxel_map_path.empty()) { global_voxel_map_path = std::string(ROOT_DIR) + "Log/PCD/global_voxel_map.bin"; }
+  if (global_voxel_map_path.empty()) { global_voxel_map_path = "Log/PCD/global_voxel_map.bin"; }
   if (load_global_voxel_map_en)
   {
 
@@ -129,7 +130,20 @@ void LIVMapper::readParameters(rclcpp::Node::SharedPtr &node)
   try_declare.template operator()<bool>("map_io.save_global_voxel_map_en", false);
   try_declare.template operator()<bool>("map_io.load_global_voxel_map_en", false);
   try_declare.template operator()<bool>("map_io.localization_mode_en", false);
-  try_declare.template operator()<std::string>("map_io.global_voxel_map_path", std::string(ROOT_DIR) + "Log/PCD/global_voxel_map.bin");
+  try_declare.template operator()<std::string>("map_io.global_voxel_map_path", "Log/PCD/global_voxel_map.bin");
+
+  try_declare.template operator()<bool>("loop_closing.enable", false);
+  try_declare.template operator()<bool>("loop_closing.online_mode", true);
+  try_declare.template operator()<double>("loop_closing.kf_dis_th", 2.0);
+  try_declare.template operator()<double>("loop_closing.kf_angle_deg", 15.0);
+  try_declare.template operator()<int>("loop_closing.loop_kf_gap", 20);
+  try_declare.template operator()<int>("loop_closing.min_id_interval", 20);
+  try_declare.template operator()<int>("loop_closing.closest_id_th", 50);
+  try_declare.template operator()<double>("loop_closing.max_range", 20.0);
+  try_declare.template operator()<double>("loop_closing.ndt_score_th", 1.3);
+  try_declare.template operator()<bool>("loop_closing.with_height", false);
+  try_declare.template operator()<bool>("loop_closing.save_corrected_pcd", true);
+  try_declare.template operator()<std::string>("loop_closing.corrected_pcd_path", "Log/PCD/loop_corrected_points.pcd");
   try_declare.template operator()<vector<double>>("extrin_calib.extrinsic_T", vector<double>{});
   try_declare.template operator()<vector<double>>("extrin_calib.extrinsic_R", vector<double>{});
   try_declare.template operator()<vector<double>>("extrin_calib.Pcl", vector<double>{});
@@ -193,6 +207,11 @@ void LIVMapper::readParameters(rclcpp::Node::SharedPtr &node)
   this->node->get_parameter("map_io.load_global_voxel_map_en", load_global_voxel_map_en);
   this->node->get_parameter("map_io.localization_mode_en", localization_mode_en);
   this->node->get_parameter("map_io.global_voxel_map_path", global_voxel_map_path);
+
+  bool loop_closing_enable_param = false;
+  this->node->get_parameter("loop_closing.enable", loop_closing_enable_param);
+  loop_closing_en = loop_closing_enable_param && !localization_mode_en && !load_global_voxel_map_en;
+
   this->node->get_parameter("extrin_calib.extrinsic_T", extrinT);
   this->node->get_parameter("extrin_calib.extrinsic_R", extrinR);
   this->node->get_parameter("extrin_calib.Pcl", cameraextrinT);
@@ -257,6 +276,24 @@ void LIVMapper::initializeComponents(rclcpp::Node::SharedPtr &node)
   if (!ba_bg_est_en) p_imu->disable_bias_est();
   if (!exposure_estimate_en) p_imu->disable_exposure_est();
 
+  if (loop_closing_en)
+  {
+    LoopManager::Options loop_options;
+    this->node->get_parameter("loop_closing.online_mode", loop_options.online_mode);
+    this->node->get_parameter("loop_closing.kf_dis_th", loop_options.kf_dis_th);
+    this->node->get_parameter("loop_closing.kf_angle_deg", loop_options.kf_angle_deg);
+    this->node->get_parameter("loop_closing.loop_kf_gap", loop_options.loop_kf_gap);
+    this->node->get_parameter("loop_closing.min_id_interval", loop_options.min_id_interval);
+    this->node->get_parameter("loop_closing.closest_id_th", loop_options.closest_id_th);
+    this->node->get_parameter("loop_closing.max_range", loop_options.max_range);
+    this->node->get_parameter("loop_closing.ndt_score_th", loop_options.ndt_score_th);
+    this->node->get_parameter("loop_closing.with_height", loop_options.with_height);
+    this->node->get_parameter("loop_closing.save_corrected_pcd", loop_options.save_corrected_pcd);
+    this->node->get_parameter("loop_closing.corrected_pcd_path", loop_options.corrected_pcd_path);
+    loop_options.enable = true;
+    loop_manager_.init(loop_options);
+  }
+
   slam_mode_ = (img_en && lidar_en) ? LIVO : imu_en ? ONLY_LIO : ONLY_LO;
 }
 
@@ -280,8 +317,8 @@ void LIVMapper::initializeFiles()
           return;
       }
   }
-  if(colmap_output_en) fout_points.open(std::string(ROOT_DIR) + "Log/Colmap/sparse/0/points3D.txt", std::ios::out);
-  if(pcd_save_interval > 0) fout_pcd_pos.open(std::string(ROOT_DIR) + "Log/PCD/scans_pos.json", std::ios::out);
+  if(colmap_output_en) fout_points.open(resolveFastLivoLogPath("Log/Colmap/sparse/0/points3D.txt"), std::ios::out);
+  if(pcd_save_interval > 0) fout_pcd_pos.open(resolveFastLivoLogPath("Log/PCD/scans_pos.json"), std::ios::out);
   fout_pre.open(DEBUG_FILE_DIR("mat_pre.txt"), std::ios::out);
   fout_out.open(DEBUG_FILE_DIR("mat_out.txt"), std::ios::out);
 }
@@ -488,13 +525,13 @@ void LIVMapper::handleLIO()
     std::ofstream outFile, evoFile;
     if (!pos_opend) 
     {
-      evoFile.open(std::string(ROOT_DIR) + "Log/result/" + seq_name + ".txt", std::ios::out);
+      evoFile.open(resolveFastLivoLogPath("Log/result/" + seq_name + ".txt"), std::ios::out);
       pos_opend = true;
       if (!evoFile.is_open()) RCLCPP_ERROR(this->node->get_logger(), "open fail\n");
     } 
     else 
     {
-      evoFile.open(std::string(ROOT_DIR) + "Log/result/" + seq_name + ".txt", std::ios::app);
+      evoFile.open(resolveFastLivoLogPath("Log/result/" + seq_name + ".txt"), std::ios::app);
       if (!evoFile.is_open()) RCLCPP_ERROR(this->node->get_logger(), "open fail\n");
     }
     Eigen::Matrix4d outT;
@@ -555,6 +592,11 @@ void LIVMapper::handleLIO()
   publish_path(pubPath);
   publish_mavros(mavros_pose_publisher);
 
+  if (loop_manager_.enabled())
+  {
+    loop_manager_.tryAddKeyframe(_state, feats_down_body, LidarMeasures.last_lio_update_time);
+  }
+
   frame_num++;
   aver_time_consu = aver_time_consu * (frame_num - 1) / frame_num + (t4 - t0) / frame_num;
 
@@ -590,10 +632,16 @@ void LIVMapper::handleLIO()
 
 void LIVMapper::savePCD() 
 {
+  if (loop_manager_.enabled())
+  {
+    loop_manager_.finish();
+    loop_manager_.saveCorrectedPointCloud(root_dir);
+  }
+
   if (pcd_save_en && (pcl_wait_save->points.size() > 0 || pcl_wait_save_intensity->points.size() > 0) && pcd_save_interval < 0) 
   {
-    std::string raw_points_dir = std::string(ROOT_DIR) + "Log/PCD/all_raw_points.pcd";
-    std::string downsampled_points_dir = std::string(ROOT_DIR) + "Log/PCD/all_downsampled_points.pcd";
+    std::string raw_points_dir = resolveFastLivoLogPath("Log/PCD/all_raw_points.pcd");
+    std::string downsampled_points_dir = resolveFastLivoLogPath("Log/PCD/all_downsampled_points.pcd");
     pcl::PCDWriter pcd_writer;
 
     if (img_en)
@@ -671,7 +719,7 @@ void LIVMapper::savePCD()
 
     if (!voxel_plane_cloud->empty())
     {
-      const std::string voxel_map_dir = std::string(ROOT_DIR) + "Log/PCD/voxel_map.pcd";
+      const std::string voxel_map_dir = resolveFastLivoLogPath("Log/PCD/voxel_map.pcd");
       pcl::PCDWriter pcd_writer;
       pcd_writer.writeBinary(voxel_map_dir, *voxel_plane_cloud);
       std::cout << GREEN << "Voxel map saved to: " << voxel_map_dir
@@ -693,10 +741,7 @@ bool LIVMapper::saveGlobalVoxelMap(const std::string &file_path)
 {
   auto &managed_voxel_map = voxelmap_manager->voxel_map_;
 
-  std::string resolved_path = file_path;
-  const bool is_windows_abs = (resolved_path.size() > 1 && resolved_path[1] == ':');
-  const bool is_unix_abs = (!resolved_path.empty() && resolved_path[0] == '/');
-  if (!is_windows_abs && !is_unix_abs) resolved_path = std::string(ROOT_DIR) + resolved_path;
+  std::string resolved_path = resolveFastLivoLogPath(file_path);
 
   if (managed_voxel_map.empty())
   {
@@ -795,10 +840,7 @@ bool LIVMapper::loadGlobalVoxelMap(const std::string &file_path)
 {
   auto &managed_voxel_map = voxelmap_manager->voxel_map_;
 
-  std::string resolved_path = file_path;
-  const bool is_windows_abs = (resolved_path.size() > 1 && resolved_path[1] == ':');
-  const bool is_unix_abs = (!resolved_path.empty() && resolved_path[0] == '/');
-  if (!is_windows_abs && !is_unix_abs) resolved_path = std::string(ROOT_DIR) + resolved_path;
+  std::string resolved_path = resolveRootRelativePath(file_path);
 
   std::ifstream ifs(resolved_path, std::ios::binary);
   if (!ifs.is_open())
@@ -1652,7 +1694,7 @@ void LIVMapper::publish_frame_world(const rclcpp::Publisher<sensor_msgs::msg::Po
     if ((pcl_wait_save->size() > 0 || pcl_wait_save_intensity->size() > 0) && pcd_save_interval > 0 && scan_wait_num >= pcd_save_interval)
     {
       pcd_index++;
-      string all_points_dir(string(string(ROOT_DIR) + "Log/PCD/") + to_string(pcd_index) + string(".pcd"));
+      string all_points_dir(resolveFastLivoLogPath("Log/PCD/" + to_string(pcd_index) + ".pcd"));
       pcl::PCDWriter pcd_writer;
       if (pcd_save_en)
       {

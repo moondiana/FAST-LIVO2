@@ -100,6 +100,11 @@ find_package(PCL REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(Sophus REQUIRED)
 find_package(Boost REQUIRED COMPONENTS thread)
+find_package(glog REQUIRED)
+find_package(yaml-cpp REQUIRED)
+find_package(TBB REQUIRED)
+
+add_subdirectory(looper)
 
 # Include directories for dependencies
 include_directories(
@@ -141,7 +146,7 @@ add_library(vio src/vio.cpp src/frame.cpp src/visual_point.cpp)
 add_library(lio src/voxel_map.cpp)
 add_library(pre src/preprocess.cpp)
 add_library(imu_proc src/IMU_Processing.cpp)
-add_library(laser_mapping src/LIVMapper.cpp)
+add_library(laser_mapping src/LIVMapper.cpp src/loop_manager.cpp src/log_init.cpp)
 add_library(utils src/utils.cpp)
 
 ament_target_dependencies(vio ${dependencies} )
@@ -152,6 +157,8 @@ ament_target_dependencies(laser_mapping ${dependencies})
 
 # linking libraries or executables to public dependencies
 target_link_libraries(laser_mapping 
+    looper
+    glog::glog
     ${CMAKE_SOURCE_DIR}/../../install/vikit_common/lib/libvikit_common.so 
     ${CMAKE_SOURCE_DIR}/../../install/vikit_ros/lib/libvikit_ros.so
     ${COMMON_DEPENDENCIES}
@@ -173,10 +180,12 @@ target_link_libraries(fastlivo_mapping
   lio
   pre
   imu_proc
+  looper
   ${PCL_LIBRARIES}
   ${OpenCV_LIBRARIES}
   ${Sophus_LIBRARIES}
   ${Boost_LIBRARIES}
+  glog::glog
 )
 
 # Link mimalloc if found

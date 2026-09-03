@@ -24,6 +24,8 @@ which is included as part of this source code package.
 #include <tf2/LinearMath/Transform.hpp>
 #include <tf2/LinearMath/Quaternion.hpp>
 
+#include "log_init.h"
+
 using namespace std;
 // using namespace Eigen;   // avoid cmake error: reference to ‘Matrix’ is ambiguous
 using namespace Sophus;
@@ -36,7 +38,7 @@ using namespace Sophus;
 #define SIZE_SMALL (100)
 #define VEC_FROM_ARRAY(v) v[0], v[1], v[2]
 #define MAT_FROM_ARRAY(v) v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8]
-#define DEBUG_FILE_DIR(name) (string(string(ROOT_DIR) + "Log/" + name))
+#define DEBUG_FILE_DIR(name) resolveFastLivoLogPath(name)
 
 enum LID_TYPE
 {

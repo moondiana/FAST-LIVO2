@@ -111,3 +111,23 @@
       interval: -1
       # how many LiDAR frames saved in each pcd file;
       # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
+
+    map_io:
+      save_global_voxel_map_en: true
+      load_global_voxel_map_en: false
+      localization_mode_en: false
+      global_voxel_map_path: "Log/PCD/global_voxel_map.bin"
+
+    loop_closing:
+      enable: false
+      online_mode: true
+      kf_dis_th: 2.0
+      kf_angle_deg: 15.0
+      loop_kf_gap: 10
+      min_id_interval: 20
+      closest_id_th: 30
+      max_range: 20.0
+      ndt_score_th: 1.0
+      with_height: false
+      save_corrected_pcd: true
+      corrected_pcd_path: "Log/PCD1/loop_corrected_points.pcd"

@@ -3,7 +3,7 @@
 
 import os
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from ament_index_python.packages import get_package_share_directory
@@ -19,11 +19,17 @@ def generate_launch_description():
     avia_config_cmd = os.path.join(config_file_dir, "MARS_LVIG.yaml")
     camera_config_cmd = os.path.join(config_file_dir, "camera_MARS_LVIG.yaml")
 
-    # Param use_rviz
     use_rviz_arg = DeclareLaunchArgument(
         "use_rviz",
         default_value="False",
         description="Whether to launch Rviz2",
+    )
+
+    use_image_republish_arg = DeclareLaunchArgument(
+        "use_image_republish",
+        default_value="False",
+        description="Republish compressed image to raw. Only enable if bag uses CompressedImage. "
+                    "Requires: sudo apt install ros-humble-compressed-image-transport",
     )
 
     avia_config_arg = DeclareLaunchArgument(
@@ -38,10 +44,9 @@ def generate_launch_description():
         description='Full path to the ROS2 parameters file to use for vikit_ros nodes',
     )
 
-    # https://github.com/ros-navigation/navigation2/blob/1c68c212db01f9f75fcb8263a0fbb5dfa711bdea/nav2_bringup/launch/navigation_launch.py#L40
     use_respawn_arg = DeclareLaunchArgument(
         'use_respawn', 
-        default_value='True',
+        default_value='False',
         description='Whether to respawn if a node crashes. Applied when composition is disabled.')
 
     avia_params_file = LaunchConfiguration('avia_params_file')
@@ -53,27 +58,14 @@ def generate_launch_description():
         avia_config_arg,
         camera_config_arg,
         use_respawn_arg,
+        use_image_republish_arg,
 
-        # use parameter_blackboard as global parameters server and load camera params
         Node(
-            package='demo_nodes_cpp',
-            executable='parameter_blackboard',
-            name='parameter_blackboard',
-            # namespace='laserMapping',
-            parameters=[
-                camera_params_file,
-            ],
-            output='screen'
-        ),
-
-        # republish compressed image to raw image
-        # https://robotics.stackexchange.com/questions/110939/how-do-i-remap-compressed-video-to-raw-video-in-ros2
-        # ros2 run image_transport republish compressed raw --ros-args --remap in:=/left_camera/image --remap out:=/left_camera/image
-        Node(
+            condition=IfCondition(LaunchConfiguration("use_image_republish")),
             package="image_transport",
             executable="republish",
             name="republish",
-            arguments=[ # Array of strings/parametric arguments that will end up in process's argv
+            arguments=[
                 'compressed', 
                 'raw',
             ],
@@ -91,11 +83,7 @@ def generate_launch_description():
             name="laserMapping",
             parameters=[
                 avia_params_file,
-            ],
-            # https://docs.ros.org/en/humble/How-To-Guides/Getting-Backtraces-in-ROS-2.html
-            prefix=[
-                # ("gdb -ex run --args"),
-                # ("valgrind --log-file=./valgrind_report.log --tool=memcheck --leak-check=full --show-leak-kinds=all -s --track-origins=yes --show-reachable=yes --undef-value-errors=yes --track-fds=yes")
+                camera_params_file,
             ],
             output="screen"
         ),

@@ -26,6 +26,13 @@ def generate_launch_description():
         description="Whether to launch Rviz2",
     )
 
+    use_image_republish_arg = DeclareLaunchArgument(
+        "use_image_republish",
+        default_value="False",
+        description="Republish compressed image to raw. Only enable if bag uses CompressedImage. "
+                    "Requires: sudo apt install ros-humble-compressed-image-transport",
+    )
+
     avia_config_arg = DeclareLaunchArgument(
         'avia_params_file',
         default_value=avia_config_cmd,
@@ -41,7 +48,7 @@ def generate_launch_description():
     # https://github.com/ros-navigation/navigation2/blob/1c68c212db01f9f75fcb8263a0fbb5dfa711bdea/nav2_bringup/launch/navigation_launch.py#L40
     use_respawn_arg = DeclareLaunchArgument(
         'use_respawn', 
-        default_value='True',
+        default_value='False',
         description='Whether to respawn if a node crashes. Applied when composition is disabled.')
 
     avia_params_file = LaunchConfiguration('avia_params_file')
@@ -53,6 +60,7 @@ def generate_launch_description():
         avia_config_arg,
         camera_config_arg,
         use_respawn_arg,
+        use_image_republish_arg,
 
         # play ros2 bag
         # ExecuteProcess(
@@ -64,10 +72,11 @@ def generate_launch_description():
         # https://robotics.stackexchange.com/questions/110939/how-do-i-remap-compressed-video-to-raw-video-in-ros2
         # ros2 run image_transport republish compressed raw --ros-args --remap in:=/left_camera/image --remap out:=/left_camera/image
         Node(
+            condition=IfCondition(LaunchConfiguration("use_image_republish")),
             package="image_transport",
             executable="republish",
             name="republish",
-            arguments=[ # Array of strings/parametric arguments that will end up in process's argv
+            arguments=[
                 'compressed', 
                 'raw',
             ],
